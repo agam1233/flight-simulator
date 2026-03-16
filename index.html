@@ -3,37 +3,58 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Voxel Flight - Crash Physics</title>
+    <title>Voxel Flight - Mountains & Fixes</title>
     <style>
-        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        #ui {
+        body { margin: 0; overflow: hidden; background: #87CEEB; font-family: 'Segoe UI', Tahoma, sans-serif; user-select: none; }
+        #ui-container { position: absolute; width: 100%; height: 100%; pointer-events: none; z-index: 10; }
+        #stats-hud {
             position: absolute; top: 20px; left: 20px; color: #0f0;
-            background: rgba(0, 20, 0, 0.8); padding: 15px; border: 1px solid #0f0;
-            pointer-events: none; text-shadow: 0 0 5px #0f0; z-index: 10;
+            background: rgba(0, 20, 0, 0.8); padding: 20px; border: 2px solid #0f0;
+            text-shadow: 0 0 5px #0f0; border-radius: 8px;
+        }
+        #controls-legend {
+            position: absolute; bottom: 20px; left: 20px; color: #fff;
+            background: rgba(0, 0, 0, 0.7); padding: 15px; border-left: 4px solid #0f0;
+            font-size: 0.9rem; line-height: 1.4;
+        }
+        #control-wrapper {
+            position: absolute; bottom: 40px; right: 40px;
+            width: 170px; height: 170px;
+            background: rgba(255, 255, 255, 0.1); border: 2px solid #0f0; border-radius: 50%;
+            pointer-events: auto; backdrop-filter: blur(5px);
+        }
+        #joystick-knob {
+            position: absolute; top: 50%; left: 50%; width: 28px; height: 28px;
+            background: #0f0; border-radius: 50%; transform: translate(-50%, -50%);
+            box-shadow: 0 0 15px #0f0;
         }
         #crash-overlay {
             position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
-            color: #ff0000; font-size: 3rem; font-weight: bold; display: none;
-            text-shadow: 0 0 20px #000; z-index: 20; text-align: center;
+            color: #ff3333; font-size: 4rem; font-weight: bold; display: none; text-align: center;
         }
-        .stat { font-size: 1.1rem; margin-bottom: 4px; }
-        .controls { font-size: 0.8rem; color: #8f8; margin-top: 10px; border-top: 1px solid #0f0; padding-top: 8px; }
+        .val { color: #fff; font-weight: bold; }
     </style>
 </head>
 <body>
 
-    <div id="ui">
-        <div class="stat">ALT: <span id="alt">0</span> FT</div>
-        <div class="stat">SPD: <span id="speed">0</span> KN</div>
-        <div id="gear-div" class="stat">GEAR: <span id="gear">DOWN</span></div>
-        <div class="stat">VIEW: <span id="view">CHASE</span></div>
-        <div class="controls">
-            W/S: PITCH | A/D: ROLL | SHIFT/CTRL: THRUST<br>
-            <b>C: COCKPIT</b> | <b>G: GEAR</b> | <b>R: MANUAL RESET</b>
+    <div id="ui-container">
+        <div id="stats-hud">
+            <div style="font-size: 1.4rem;">SPD: <span id="speed" class="val">0</span> KN</div>
+            <div style="font-size: 1.4rem;">ALT: <span id="alt" class="val">0</span> FT</div>
+            <div style="font-size: 1.1rem; color: #fb0; margin-top: 5px;">THROTTLE: <span id="throttle" class="val">0</span>%</div>
+            <div id="stall-warning" style="color: #f00; font-weight: bold; margin-top: 10px; opacity: 0;">STALLING!</div>
         </div>
-    </div>
 
-    <div id="crash-overlay">CRASHED!<br><span style="font-size: 1rem; color: #fff;">RESTARTING...</span></div>
+        <div id="controls-legend">
+            <b style="color: #0f0;">CONTROLS</b><br>
+            [W/S] - Pitch | [A/D] - Roll<br>
+            [SHIFT/CTRL] - Throttle<br>
+            [SPACE] - Level Wings | [G] - Gear
+        </div>
+
+        <div id="control-wrapper"><div id="joystick-knob"></div></div>
+        <div id="crash-overlay">CRASHED</div>
+    </div>
 
     <script type="importmap">
         { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
@@ -42,282 +63,194 @@
     <script type="module">
         import * as THREE from 'three';
 
-        // --- CONFIGURABLE CONSTANTS (Change these to tune gameplay) ---
-        const CRASH_SPEED_THRESHOLD = 40; // Speed above which landing becomes a crash
-        const PARTICLE_COUNT = 40;       // How many debris blocks spawn
-        const GRAVITY = 9.8;             
-        // --------------------------------------------------------------
+        // --- CONFIG ---
+        const THROTTLE_INC = 33.3; 
+        const LIFT = 0.015;
+        const GRAVITY = 0.16;
+        const TAKEOFF_SPEED = 55;
+        const MOUNTAIN_DENSITY = 4; // Mountains per chunk
 
+        // --- SETUP ---
         const scene = new THREE.Scene();
-        scene.background = new THREE.Color(0x87CEEB); 
-        scene.fog = new THREE.Fog(0x87CEEB, 200, 3000);
+        scene.background = new THREE.Color(0x87CEEB);
+        scene.fog = new THREE.Fog(0x87CEEB, 1000, 5000);
 
         const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 10000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight);
         document.body.appendChild(renderer.domElement);
 
-        const sun = new THREE.DirectionalLight(0xffffff, 1.5);
+        const sun = new THREE.DirectionalLight(0xffffff, 1.8);
         sun.position.set(500, 1000, 500);
         scene.add(sun, new THREE.AmbientLight(0xffffff, 0.5));
 
-        const planeMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee });
-        const grassMat = new THREE.MeshStandardMaterial({ color: 0x2d5a27 });
-        const stoneMat = new THREE.MeshStandardMaterial({ color: 0x555555 });
-        const runwayMat = new THREE.MeshStandardMaterial({ color: 0x111111 });
+        // --- MATERIALS ---
+        const stoneMat = new THREE.MeshStandardMaterial({ color: 0x666666 });
+        const grassMat = new THREE.MeshStandardMaterial({ color: 0x3d7a37 });
+        // Fixed Runway Material (polygonOffset prevents flickering)
+        const runwayMat = new THREE.MeshStandardMaterial({ 
+            color: 0x222222,
+            polygonOffset: true,
+            polygonOffsetFactor: -1,
+            polygonOffsetUnits: -1
+        });
 
-        // --- PLANE CONSTRUCTION ---
-        let plane = new THREE.Group();
-        let planeParts = []; // Store parts for explosion physics
+        // --- PLANE ---
+        const plane = new THREE.Group();
+        const pMat = new THREE.MeshStandardMaterial({ color: 0xeeeeee });
+        const body = new THREE.Mesh(new THREE.BoxGeometry(1.2, 0.8, 4), pMat);
+        const wings = new THREE.Mesh(new THREE.BoxGeometry(8, 0.05, 1.5), pMat);
+        const gear = new THREE.Group();
+        const wheel = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.6, 0.3), new THREE.MeshStandardMaterial({color:0x111111}));
+        const gL = wheel.clone(); gL.position.set(1, -0.6, 0);
+        const gR = wheel.clone(); gR.position.set(-1, -0.6, 0);
+        const gF = wheel.clone(); gF.position.set(0, -0.6, -1.5);
+        gear.add(gL, gR, gF);
+        plane.add(body, wings, gear);
+        scene.add(plane);
+        plane.position.set(0, 1.4, 0);
 
-        function createPlane() {
-            scene.remove(plane);
-            plane = new THREE.Group();
-            planeParts = [];
-
-            const body = new THREE.Mesh(new THREE.BoxGeometry(1, 0.8, 4), planeMat);
-            const wings = new THREE.Mesh(new THREE.BoxGeometry(7, 0.1, 1.5), planeMat);
-            const cockpit = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.6, 1.2), new THREE.MeshStandardMaterial({color: 0x000000, transparent: true, opacity: 0.5}));
-            cockpit.position.set(0, 0.5, -0.8);
-            
-            plane.add(body, wings, cockpit);
-            planeParts.push(body, wings, cockpit);
-            
-            scene.add(plane);
-            plane.position.set(0, 5, 0);
-        }
-        createPlane();
-
-        const gearGroup = new THREE.Group();
-        const wheel = new THREE.Mesh(new THREE.BoxGeometry(0.25, 0.5, 0.25), new THREE.MeshStandardMaterial({color: 0x111111}));
-        const gearL = wheel.clone(); gearL.position.set(0.6, -0.5, 0);
-        const gearR = wheel.clone(); gearR.position.set(-0.6, -0.5, 0);
-        const gearF = wheel.clone(); gearF.position.set(0, -0.5, -1.5);
-        gearGroup.add(gearL, gearR, gearF);
-        plane.add(gearGroup);
-
-        // --- WORLD GEN ---
-        const runways = [];
+        // --- ENVIRONMENT GENERATOR ---
         const obstacles = [];
-
-        function createRunway(x, z, rotation) {
-            const rGroup = new THREE.Group();
-            const asphalt = new THREE.Mesh(new THREE.BoxGeometry(60, 0.5, 800), runwayMat);
-            rGroup.add(asphalt);
-            rGroup.position.set(x, 0.25, z);
-            rGroup.rotation.y = rotation;
-            scene.add(rGroup);
-            runways.push({ x, z, rotation });
-        }
-
-        for(let i=0; i<31; i++) {
-            const rx = i === 0 ? 0 : (Math.random() - 0.5) * 10000;
-            const rz = i === 0 ? -400 : (Math.random() - 0.5) * 10000;
-            createRunway(rx, rz, Math.random() * Math.PI);
-        }
-
         const chunks = new Map();
+
         function createChunk(cx, cz) {
             const group = new THREE.Group();
-            const ground = new THREE.Mesh(new THREE.PlaneGeometry(1000, 1000), grassMat);
+            const wx = cx * 1500;
+            const wz = cz * 1500;
+
+            const ground = new THREE.Mesh(new THREE.PlaneGeometry(1500, 1500), grassMat);
             ground.rotation.x = -Math.PI/2;
             group.add(ground);
 
-            const chunkWorldX = cx * 1000;
-            const chunkWorldZ = cz * 1000;
-            
-            let nearRunway = runways.some(r => Math.hypot(r.x - chunkWorldX, r.z - chunkWorldZ) < 800);
-
-            if(!nearRunway) {
-                for (let i = 0; i < 5; i++) {
-                    const h = Math.random() * 400 + 50;
-                    const w = Math.random() * 100 + 50;
+            // Don't spawn mountains on the starting runway area
+            if (Math.abs(cx) > 0 || cz < -2) {
+                for (let i = 0; i < MOUNTAIN_DENSITY; i++) {
+                    const h = Math.random() * 500 + 100;
+                    const w = Math.random() * 100 + 100;
                     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, w), stoneMat);
-                    m.position.set((Math.random()-0.5)*1000, h/2, (Math.random()-0.5)*1000);
+                    m.position.set((Math.random()-0.5)*1300, h/2, (Math.random()-0.5)*1300);
                     group.add(m);
-                    obstacles.push(m); // Track for collision
+                    obstacles.push(m);
                 }
             }
-
-            group.position.set(chunkWorldX, 0, chunkWorldZ);
+            group.position.set(wx, 0, wz);
             scene.add(group);
             chunks.set(`${cx},${cz}`, group);
         }
 
-        // --- GAME STATE ---
-        let speed = 0, isCockpit = false, gearDown = true, isCrashed = false;
-        let particles = [];
+        // Fixed Runway (raised slightly to avoid Z-fighting)
+        const runway = new THREE.Mesh(new THREE.BoxGeometry(100, 0.2, 3000), runwayMat);
+        runway.position.set(0, 0.11, -1200);
+        scene.add(runway);
+
+        // --- INPUTS ---
+        let throttle = 0, curSpeed = 0, isCrashed = false, gearDown = true;
+        let mouseInput = { x: 0, y: 0 };
         const keys = {};
 
-        window.onkeydown = (e) => {
-            keys[e.code] = true;
-            if(isCrashed && e.code === 'KeyR') resetGame();
-            if(!isCrashed) {
-                if(e.code === 'KeyC') isCockpit = !isCockpit;
-                if(e.code === 'KeyG') gearDown = !gearDown;
-            }
-        };
+        const knob = document.getElementById('joystick-knob');
+        const pad = document.getElementById('control-wrapper');
+        pad.addEventListener('pointermove', (e) => {
+            const r = pad.getBoundingClientRect();
+            mouseInput.x = Math.max(-1, Math.min(1, ((e.clientX - r.left) / r.width) * 2 - 1));
+            mouseInput.y = Math.max(-1, Math.min(1, ((e.clientY - r.top) / r.height) * 2 - 1));
+            knob.style.left = `${50 + mouseInput.x * 40}%`;
+            knob.style.top = `${50 + mouseInput.y * 40}%`;
+        });
+        pad.addEventListener('pointerleave', () => { mouseInput = { x: 0, y: 0 }; knob.style.left = knob.style.top = '50%'; });
+
+        window.onkeydown = (e) => { keys[e.code] = true; if(e.code === 'KeyG') gearDown = !gearDown; };
         window.onkeyup = (e) => keys[e.code] = false;
 
-        function explode() {
-            if (isCrashed) return;
-            isCrashed = true;
-            speed = 0;
-            document.getElementById('crash-overlay').style.display = 'block';
-
-            // Explode the plane parts
-            planeParts.forEach(part => {
-                const worldPos = new THREE.Vector3();
-                part.getWorldPosition(worldPos);
-                scene.attach(part); // Detach from plane group
-                
-                part.userData.velocity = new THREE.Vector3(
-                    (Math.random() - 0.5) * 20,
-                    Math.random() * 20,
-                    (Math.random() - 0.5) * 20
-                );
-                part.userData.rotVel = new THREE.Vector3(Math.random()*0.1, Math.random()*0.1, Math.random()*0.1);
-            });
-
-            // Create voxel debris
-            for (let i = 0; i < PARTICLE_COUNT; i++) {
-                const p = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.4, 0.4), planeMat);
-                p.position.copy(plane.position);
-                p.userData.velocity = new THREE.Vector3(
-                    (Math.random() - 0.5) * 40,
-                    Math.random() * 30,
-                    (Math.random() - 0.5) * 40
-                );
-                scene.add(p);
-                particles.push(p);
-            }
-
-            setTimeout(resetGame, 3000);
-        }
-
-        function resetGame() {
-            isCrashed = false;
-            document.getElementById('crash-overlay').style.display = 'none';
-            
-            // Clean up old parts/particles
-            particles.forEach(p => scene.remove(p));
-            planeParts.forEach(p => scene.remove(p));
-            particles = [];
-            
-            createPlane();
-            plane.add(gearGroup);
-            plane.position.set(0, 10, 0);
-            plane.rotation.set(0, 0, 0);
-            speed = 0;
-        }
-
+        // --- PHYSICS LOOP ---
         const clock = new THREE.Clock();
-
         function update() {
             const dt = clock.getDelta();
+            if(isCrashed) return;
 
-            if (!isCrashed) {
-                // Movement Logic
-                if (keys['ShiftLeft']) speed += 80 * dt;
-                if (keys['ControlLeft']) speed -= 80 * dt;
-                speed = Math.max(0, Math.min(speed, 400));
+            // 1. Throttle (100% in 3s)
+            if(keys['ShiftLeft']) throttle = Math.min(throttle + THROTTLE_INC * dt, 100);
+            if(keys['ControlLeft']) throttle = Math.max(throttle - THROTTLE_INC * dt, 0);
 
-                if (keys['KeyW']) plane.rotateX(-1.8 * dt);
-                if (keys['KeyS']) plane.rotateX(1.8 * dt);
-                if (keys['KeyA']) plane.rotateZ(2.2 * dt);
-                if (keys['KeyD']) plane.rotateZ(-2.2 * dt);
-                if (keys['Space']) { plane.rotation.z *= 0.9; plane.rotation.x *= 0.9; }
+            // 2. Airspeed
+            const forward = new THREE.Vector3(0, 0, -1).applyQuaternion(plane.quaternion);
+            curSpeed += (throttle * 0.28) * dt;
+            curSpeed -= forward.y * 35 * dt; 
+            curSpeed -= (curSpeed * 0.012) * dt;
+            curSpeed = Math.max(0, curSpeed);
 
-                plane.translateZ(-speed * dt);
+            // 3. Controls
+            const agility = Math.min(1, curSpeed / 30);
+            let pCtrl = mouseInput.y * 1.8;
+            let rCtrl = -mouseInput.x * 2.5;
+            if(keys['KeyW']) pCtrl = -1.8; if(keys['KeyS']) pCtrl = 1.8;
+            if(keys['KeyA']) rCtrl = 2.5; if(keys['KeyD']) rCtrl = -2.5;
 
-                // --- CRASH/PHYSICS CHECKS ---
+            plane.rotateX(pCtrl * agility * dt);
+            plane.rotateZ(rCtrl * agility * dt);
+            if(keys['Space']) { plane.rotation.z *= 0.94; plane.rotation.x *= 0.94; }
+
+            // 4. Ground vs Flight
+            let onGround = plane.position.y <= 1.42;
+            let lift = 0;
+
+            if (onGround) {
+                plane.position.y = 1.4;
+                if (curSpeed > TAKEOFF_SPEED && pCtrl > 0.4) lift = (curSpeed * 0.7);
+                else plane.rotation.x = Math.max(0, plane.rotation.x);
+            } else {
+                lift = (curSpeed * curSpeed * LIFT) * dt;
+                plane.position.y -= GRAVITY * 60 * dt;
                 
-                // 1. Ground Collision
-                if (plane.position.y < 0.8) {
-                    const pitch = Math.abs(plane.rotation.x);
-                    const roll = Math.abs(plane.rotation.z);
-                    
-                    // If going too fast, or landing without gear, or tilted too much = CRASH
-                    if (speed > CRASH_SPEED_THRESHOLD || !gearDown || pitch > 0.3 || roll > 0.3) {
-                        explode();
-                    } else {
-                        // Safe Taxiing
-                        plane.position.y = 0.8;
-                        plane.rotation.x = 0;
-                        plane.rotation.z = 0;
-                        speed *= 0.98; // Friction on ground
-                    }
+                if (curSpeed < 40) {
+                    document.getElementById('stall-warning').style.opacity = 1;
+                    lift *= 0.4; plane.rotateX(0.5 * dt);
+                } else {
+                    document.getElementById('stall-warning').style.opacity = 0;
                 }
-
-                // 2. Obstacle Collision (Check if plane bounding box hits mountains)
-                const planeBox = new THREE.Box3().setFromObject(plane);
-                // Optimization: only check obstacles within 200 units
-                obstacles.forEach(obs => {
-                    if (plane.position.distanceTo(obs.getWorldPosition(new THREE.Vector3())) < 150) {
-                        const obsBox = new THREE.Box3().setFromObject(obs);
-                        if (planeBox.intersectsBox(obsBox)) explode();
-                    }
-                });
-
-                // Gear Animation
-                gearGroup.scale.y = THREE.MathUtils.lerp(gearGroup.scale.y, gearDown ? 1 : 0.01, 0.1);
-                gearGroup.position.y = gearDown ? 0 : 0.4;
-
-            } else {
-                // Physics for exploded parts
-                [...planeParts, ...particles].forEach(p => {
-                    if(p.position.y > 0.2) {
-                        p.userData.velocity.y -= GRAVITY * 5 * dt;
-                        p.position.add(p.userData.velocity.clone().multiplyScalar(dt));
-                        if(p.userData.rotVel) {
-                            p.rotation.x += p.userData.rotVel.x;
-                            p.rotation.y += p.userData.rotVel.y;
-                        }
-                    } else {
-                        p.position.y = 0.2; // Friction on ground for debris
-                        p.userData.velocity.multiplyScalar(0.95);
-                    }
-                });
             }
 
-            // Camera handling
-            if(isCockpit && !isCrashed) {
-                camera.position.copy(new THREE.Vector3(0, 0.6, -0.8).applyMatrix4(plane.matrixWorld));
-                camera.lookAt(new THREE.Vector3(0, 0.6, -10).applyMatrix4(plane.matrixWorld));
-            } else {
-                const offset = new THREE.Vector3(0, 6, 20).applyQuaternion(plane.quaternion);
-                const targetCamPos = plane.position.clone().add(offset);
-                camera.position.lerp(targetCamPos, 0.1);
-                camera.lookAt(plane.position);
+            plane.translateZ(-curSpeed * dt);
+            plane.position.y += lift * dt;
+
+            // 5. Collisions
+            if (plane.position.y < 1.3) {
+                if (!gearDown || curSpeed > 80 || Math.abs(plane.rotation.x) > 0.3) crash();
+                else { plane.position.y = 1.4; plane.rotation.x = 0; plane.rotation.z = 0; curSpeed *= 0.98; }
             }
 
-            // Chunk Loading
-            const px = Math.round(plane.position.x / 1000);
-            const pz = Math.round(plane.position.z / 1000);
-            for(let x=px-2; x<=px+2; x++) for(let z=pz-2; z<=pz+2; z++) {
-                if(!chunks.has(`${x},${z}`)) createChunk(x, z);
+            // Mountain Collision (Box check)
+            const planeBox = new THREE.Box3().setFromObject(plane);
+            for(let i=0; i<obstacles.length; i++) {
+                if (plane.position.distanceTo(obstacles[i].getWorldPosition(new THREE.Vector3())) < 150) {
+                    if (planeBox.intersectsBox(new THREE.Box3().setFromObject(obstacles[i]))) crash();
+                }
             }
 
-            // UI Updates
-            document.getElementById('speed').innerText = Math.round(speed);
-            document.getElementById('alt').innerText = Math.max(0, Math.round(plane.position.y * 10 - 8));
-            document.getElementById('gear').innerText = gearDown ? "DOWN" : "UP";
-            document.getElementById('gear-div').style.color = gearDown ? "#0f0" : "#f00";
-            document.getElementById('view').innerText = isCockpit ? "COCKPIT" : "CHASE";
+            // Gear/Cam/UI
+            gear.scale.y = THREE.MathUtils.lerp(gear.scale.y, gearDown ? 1 : 0.01, 0.1);
+            const camPos = plane.position.clone().add(new THREE.Vector3(0, 6, 20).applyQuaternion(plane.quaternion));
+            camera.position.lerp(camPos, 0.15);
+            camera.lookAt(plane.position);
+
+            const px = Math.round(plane.position.x / 1500);
+            const pz = Math.round(plane.position.z / 1500);
+            for(let x=px-2; x<=px+2; x++) for(let z=pz-2; z<=pz+2; z++) if(!chunks.has(`${x},${z}`)) createChunk(x, z);
+
+            document.getElementById('speed').innerText = Math.round(curSpeed);
+            document.getElementById('alt').innerText = Math.max(0, Math.round(plane.position.y * 10 - 14));
+            document.getElementById('throttle').innerText = Math.round(throttle);
         }
 
-        function animate() {
-            requestAnimationFrame(animate);
-            update();
-            renderer.render(scene, camera);
+        function crash() {
+            if(isCrashed) return; isCrashed = true;
+            document.getElementById('crash-overlay').style.display = 'block';
+            setTimeout(() => location.reload(), 2000);
         }
+
+        function animate() { requestAnimationFrame(animate); update(); renderer.render(scene, camera); }
         animate();
-
-        window.onresize = () => {
-            camera.aspect = window.innerWidth / window.innerHeight;
-            camera.updateProjectionMatrix();
-            renderer.setSize(window.innerWidth, window.innerHeight);
-        };
     </script>
 </body>
 </html>
